@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>待ち行列シミュレーション</title>
+    <title>待ち行列シミュレーション (視覚化UI)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Interフォントの設定 */
@@ -143,7 +143,7 @@
             z-index: 10;
             top: 50%;
             transform: translateY(-50%) translateX(0); 
-            opacity: 0; 
+            opacity: 0; /* ★修正点: 初期状態では非表示 */
         }
 
         .person.waiting {
@@ -154,7 +154,7 @@
         /* 客のリアルタイム待ち時間表示のスタイル */
         .person .person-info {
             position: absolute;
-            width: 100px;
+            width: 120px; /* 少し幅を広げる */
             text-align: center;
             bottom: -20px; 
             left: 50%;
@@ -162,6 +162,16 @@
             white-space: nowrap;
             font-size: 10px; 
             font-weight: normal;
+        }
+        
+        /* 待ち時間表示の色分け */
+        .person .wait-time.text-green-600 {
+            color: #059669;
+            font-weight: bold;
+        }
+        .person .wait-time.text-red-500 {
+            color: #EF4444;
+            font-weight: bold;
         }
         
         /* 乗り場内の客のスタイル (改善) */
@@ -193,12 +203,17 @@
         }
         
         .sp-wait-time {
-            font-size: 9px;
+            font-size: 12px; /* 少し大きく */
             font-weight: bold;
             color: white; 
             margin-top: 2px;
             text-shadow: 0 0 2px rgba(0, 0, 0, 0.5); 
             white-space: nowrap;
+        }
+        /* 乗車中の長い待ち時間に対する視覚的警告 */
+        .sp-wait-time.text-yellow-400 {
+            color: #FBBF24;
+            text-shadow: 0 0 4px rgba(0, 0, 0, 0.9); 
         }
 
 
@@ -301,7 +316,6 @@
 <div class="container">
     <header class="text-center">
         <h1 class="text-3xl font-extrabold text-gray-800 mb-2">待ち行列シミュレーション (アトラクション乗車)</h1>
-        <!-- 削除されたPタグ: <p class="text-gray-500">待ち時間のカウントは、並び始めた瞬間から始まります。</p> -->
     </header>
 
     <!-- 設定カード -->
@@ -352,7 +366,6 @@
 
     <!-- 視覚化カード -->
     <div class="visualization-card">
-        <!-- モデル注釈を削除: <h2 id="modelTitle" class="text-xl font-semibold mb-4 text-gray-700">乗り場 1つモデル (M/D/1 モデルに近い動作)</h2> -->
         <h2 id="modelTitle" class="text-xl font-semibold mb-4 text-gray-700">乗り場 1つモデル</h2>
 
         <!-- シミュレーション表示エリア -->
@@ -419,8 +432,8 @@
 <script>
     // 定数
     const SIM_COUNT = 500; // シミュレーション対象の客数
-    const PERSON_SIZE = 45; // 客のサイズ (px)
     const VISUAL_SCALE_X = 55; // キュー内の客の間隔 (客サイズ + 10px)
+    const ZERO_THRESHOLD = 0.01; // 待ち時間ゼロ判定のしきい値
 
     // DOM要素
     const servicePointsSelect = document.getElementById('servicePoints');
@@ -437,8 +450,6 @@
     const avgWaitingTimeDisplay = document.getElementById('avgWaitingTime');
     const messageBox = document.getElementById('messageBox');
     const finalAvgWaitTime = document.getElementById('finalAvgWaitTime');
-    
-    // 追加したDOM要素
     const simulationSpeedInput = document.getElementById('simulationSpeed');
     const speedValueDisplay = document.getElementById('speedValue');
     const startCountDisplay = document.getElementById('startCount');
@@ -456,7 +467,7 @@
         currentPersonId: 0, // これまでにデータが生成され、システムに登録された客の総数
         maxArrivalInterval: 120, 
         serviceTime: 60, 
-        numServicePoints: 1, 
+        numServicePoints: 1, // 初期値は1
         
         // シミュレーションのコア変数
         touchaku: 0, // 次の客の到着時刻
@@ -468,7 +479,8 @@
         totalWaitingTime: 0,
 
         // アニメーション用データ
-        people: new Map(), // { ID: { element, arrivalTime, waitingTime, state, servicePointIndex, queueStartTime, kaishi, kanryo } }
+        // { ID: { element, arrivalTime, waitingTime, state, servicePointIndex, queueStartTime, kaishi, kanryo } }
+        people: new Map(), 
         animationInterval: 50, // アニメーションの更新間隔 (ms)
         simSpeed: 10, // シミュレーション速度 (デフォルト10倍)
     };
@@ -481,26 +493,22 @@
     function createPersonElement(id) {
         const personEl = document.createElement('div');
         personEl.id = `person-${id}`;
-        // waitingクラスを最初から付けて、登場した瞬間から黄色く表示する
-        personEl.className = 'person waiting'; 
+        personEl.className = 'person'; // 初期は opacity: 0 で非表示
         
         // 客の番号とリアルタイム待ち時間表示用の要素を挿入 (ID+1で1からナンバリング)
         personEl.innerHTML = `
             <span class="person-id">${id + 1}</span>
             <div class="person-info">
-                <span class="wait-time text-gray-700">0.0秒</span>
+                <span class="wait-time text-gray-700">0.0秒経過</span>
             </div>
         `;
         
-        // **客の登場アニメーションを単純化**
-        // 待ち行列の末尾の位置に即座に配置する (アニメーションで右から動くのを防ぐ)
-        // この関数が呼ばれる時点で simState.waitingQueue にはまだこの客のIDが入っていないため、
-        // 長さは新しく追加される客がどこに位置すべきかを示す
+        // 待ち行列の末尾の位置に即座に配置する 
         const queueLength = simState.waitingQueue.length;
         const initialX = queueLength * VISUAL_SCALE_X; 
         
         personEl.style.transform = `translateX(${initialX}px) translateY(-50%)`;
-        personEl.style.opacity = 1;
+        personEl.style.opacity = 0; // ★修正点: 初期は透明で非表示
 
         queueLine.appendChild(personEl);
 
@@ -512,6 +520,8 @@
      */
     function updateServicePointsUI() {
         servicePointContainer.innerHTML = '';
+        simState.servicePointKanryoTimes = Array(simState.numServicePoints).fill(0);
+
         for (let i = 0; i < simState.numServicePoints; i++) {
             const spWrapEl = document.createElement('div');
             spWrapEl.className = 'service-point-wrap';
@@ -526,7 +536,7 @@
                 </div>
                 <p class="text-lg mt-4">乗り場 ${i + 1}</p>
                 <p id="sp-status-${i}" class="text-sm font-normal"></p>
-                <!-- サービスポイント内での客の表示 (改善) -->
+                <!-- サービスポイント内での客の表示 -->
                 <div id="sp-person-container-${i}" class="sp-person-container hidden">
                     <div class="sp-person-number"></div>
                     <div class="sp-wait-time"></div>
@@ -541,39 +551,33 @@
      * 状態をリセットし、UIを初期状態に戻す
      */
     function resetSimulation() {
-        // タイマー停止とフラグのリセット
         clearInterval(simState.timer);
         simState.isRunning = false;
         simState.isPaused = false;
         
-        // 状態変数のリセット
         simState.time = 0;
         simState.currentPersonId = 0;
         simState.touchaku = 0;
-        simState.servicePointKanryoTimes = Array(simState.numServicePoints).fill(0);
         simState.waitingQueue = [];
         simState.waitingTimes = [];
         simState.totalWaitingTime = 0;
         simState.people.clear();
         
-        queueLine.innerHTML = ''; // キューラインの客をリセット
+        queueLine.innerHTML = ''; 
         
-        // 乗り場UIの初期化
-        simState.numServicePoints = parseInt(servicePointsSelect.value); // 設定値を反映
         updateServicePointsUI();
 
-        // 状態表示の更新
         updateStatusDisplay();
         
-        completedCountDisplay.textContent = '0'; // 乗車完了人数をリセット
+        completedCountDisplay.textContent = '0'; 
 
-        // 待ち時間一覧をリセット
         waitingTimesList.innerHTML = '';
-        listPlaceholder.classList.remove('hidden');
-        listTotalCountDisplay.textContent = SIM_COUNT; // 合計人数を正確に設定
+        listPlaceholder.classList.remove('hidden'); // リセット時は表示
+        listTotalCountDisplay.textContent = SIM_COUNT; 
         completedCountListDisplay.textContent = '0';
+        waitingTimesList.appendChild(listPlaceholder);
 
-        // ボタン状態の更新
+
         startCountDisplay.textContent = SIM_COUNT;
         startButton.textContent = `シミュレーション開始 (${SIM_COUNT}人)`;
         startButton.classList.remove('bg-yellow-500', 'hover:bg-yellow-600', 'bg-blue-500', 'hover:bg-blue-600');
@@ -581,7 +585,6 @@
         startButton.disabled = false;
         resetButton.disabled = true;
         
-        // モデルタイトルの更新 (注釈を削除)
         modelTitle.textContent = simState.numServicePoints === 1 
             ? '乗り場 1つモデル' 
             : '乗り場 2つモデル';
@@ -601,7 +604,6 @@
             startButton.classList.remove('bg-yellow-500', 'hover:bg-yellow-600');
             startButton.classList.add('bg-blue-500', 'hover:bg-blue-600');
         } else {
-            // 再開
             startButton.textContent = '一時停止';
             startButton.classList.remove('bg-blue-500', 'hover:bg-blue-600');
             startButton.classList.add('bg-yellow-500', 'hover:bg-yellow-600');
@@ -615,12 +617,12 @@
     function processNextPerson() {
         const currentId = simState.currentPersonId;
         
-        // 1. 到着時刻の計算
+        // 1. 到着時刻の計算 (touchaku)
         let tmp = 0;
         if (currentId > 0) {
-            // 到着間隔の最小値を1秒に設定 (0秒間隔の到着を防ぐ)
             const maxInterval = simState.maxArrivalInterval;
-            tmp = 1 + Math.floor((maxInterval - 1) * Math.random());
+            // 乱数生成を1〜maxIntervalの整数に修正
+            tmp = 1 + Math.floor(maxInterval * Math.random());
         }
         
         simState.touchaku = simState.touchaku + tmp;
@@ -630,7 +632,7 @@
         let spIndex = -1;
         
         for (let i = 0; i < simState.servicePointKanryoTimes.length; i++) {
-            if (simState.servicePointKanryoTimes[i] < minKanryoTime) {
+            if (simState.servicePointKanryoTimes[i] < minKanryoTime) { 
                 minKanryoTime = simState.servicePointKanryoTimes[i];
                 spIndex = i;
             }
@@ -648,38 +650,38 @@
         }
         
         // 4. 待ち時間の計算
-        const waitingTime = kaishi - simState.touchaku;
+        const waitingTime = kaishi - simState.touchaku; 
         
-        // 5. 乗車完了時刻の更新
+        // 5. 乗車完了時刻の更新 (kanryo)
         const kanryo = kaishi + simState.serviceTime;
-        simState.servicePointKanryoTimes[spIndex] = kanryo; // 最も早く空いた乗り場の完了時刻を更新
+        simState.servicePointKanryoTimes[spIndex] = kanryo; 
+
+        // 6. 待ち開始時刻 (queueStartTime) の決定
+        const queueStartTime = simState.touchaku; // 到着時間
 
         // 客の到着情報を記録
         const personData = {
             id: currentId,
             element: null, 
             arrivalTime: simState.touchaku, // touchaku
-            waitingTime: waitingTime,
-            state: waitingTime > 0 ? 'waiting' : 'arrived', // 'arrived' (待ちなし), 'waiting', 'serving', 'completed'
+            waitingTime: waitingTime, // 客が待つべき総時間 (統計用)
+            state: 'arrived', // 'arrived', 'waiting', 'serving', 'completed'
             servicePointIndex: spIndex, // 割り当てられた乗り場
-            kaishi: kaishi,
+            queueStartTime: queueStartTime, // ★待ち時間カウントアップの開始時刻
+            kaishi: kaishi, // 乗車開始予定時刻
             kanryo: kanryo,
-            queueStartTime: simState.time, // 待ち行列に入った時刻 (シミュレーションの現在時刻で正確に記録)
         };
         
         simState.totalWaitingTime += waitingTime;
         simState.waitingTimes.push(waitingTime);
         simState.people.set(currentId, personData);
 
-        if (waitingTime > 0) {
-            // 待ち行列に追加
-            // elementの作成はこの時点で、待ち行列の長さを元に位置を決定する
-            personData.element = createPersonElement(currentId);
-            simState.waitingQueue.push(currentId);
-            
-            // 新しい客が追加されたことによる、既存客の位置更新（列が詰まる動きはこれで行う）
-            updateWaitingQueuePosition();
-        }
+        // 客のDOM要素を生成し、キューに追加
+        personData.element = createPersonElement(currentId);
+        simState.waitingQueue.push(currentId);
+        
+        // 新しい客が追加されたことによる、既存客の位置更新
+        updateWaitingQueuePosition();
         
         // 次の客に進む
         simState.currentPersonId++;
@@ -689,48 +691,23 @@
      * 待ち客の見た目の位置を更新
      */
     function updateWaitingQueuePosition() {
-        simState.waitingQueue.forEach((personId, index) => {
+        // 現在、実際に列に並んでいる客（opacity: 1の客）のみを抽出
+        const visibleQueue = simState.waitingQueue.filter(personId => {
+            const data = simState.people.get(personId);
+            return data && data.element && data.element.style.opacity == 1;
+        });
+
+        // visibleQueue の順番に基づいて位置を決定
+        visibleQueue.forEach((personId, index) => {
             const data = simState.people.get(personId);
             if (data && data.element) {
-                // index 0: サービスに最も近い客 (queueLineのX=0)
+                // index * VISUAL_SCALE_X の位置に移動
                 const finalX = index * VISUAL_SCALE_X;
-                // transformのtransitionにより、客が列の先頭に動くアニメーションが実現される
                 data.element.style.transform = `translateX(${finalX}px) translateY(-50%)`;
-                data.element.classList.add('waiting'); 
             }
         });
     }
 
-    /**
-     * 待ち時間0の客をサービスに移行させる処理
-     * @param {object} personData - 客のデータ
-     */
-    function startServingZeroWaitTimePerson(personData) {
-        
-        // サービスポイントへ状態を遷移
-        personData.state = 'serving';
-        
-        // 乗り場内で客を表示する
-        const spContainerEl = document.getElementById(`sp-person-container-${personData.servicePointIndex}`);
-        if (spContainerEl) {
-            spContainerEl.classList.remove('hidden');
-            
-            // 客番号
-            const spPersonNumEl = spContainerEl.querySelector('.sp-person-number');
-            if (spPersonNumEl) {
-                spPersonNumEl.textContent = personData.id + 1; // ID+1で1からナンバリング
-            }
-            
-            // 待ち時間表示 (待ちなし)
-            const spWaitTimeEl = spContainerEl.querySelector('.sp-wait-time');
-            if (spWaitTimeEl) {
-                spWaitTimeEl.textContent = '待ちなし';
-                spWaitTimeEl.classList.remove('text-yellow-400'); // 念のため解除
-                spWaitTimeEl.classList.add('text-white'); 
-            }
-        }
-    }
-    
     /**
      * 待ち時間一覧を更新する
      * @param {number} id 客のID
@@ -743,9 +720,9 @@
         const listItem = document.createElement('div');
         listItem.className = 'wait-list-item';
         
-        const waitText = waitingTime <= 0 ? '待ちなし' : `${waitingTime.toFixed(2)}秒待ち`;
+        const waitText = waitingTime <= ZERO_THRESHOLD ? '待ちなし' : `${waitingTime.toFixed(2)}秒待ち`;
         // サービス時間の2倍を超えると長すぎると判断
-        const waitClass = waitingTime > simState.serviceTime * 2 ? 'text-red-500' : 'text-green-600';
+        const waitClass = waitingTime > simState.serviceTime * 2 ? 'text-red-500' : (waitingTime > ZERO_THRESHOLD ? 'text-green-600' : 'text-gray-500');
 
         listItem.innerHTML = `
             <span class="wait-list-label">客 #${id + 1}</span>
@@ -754,6 +731,10 @@
         
         // リストの先頭に追加
         if (waitingTimesList.firstChild) {
+            // プレースホルダーがある場合は先に削除
+            if(waitingTimesList.firstChild.id === 'listPlaceholder') {
+                waitingTimesList.removeChild(listPlaceholder);
+            }
             waitingTimesList.insertBefore(listItem, waitingTimesList.firstChild);
         } else {
             waitingTimesList.appendChild(listItem);
@@ -782,44 +763,49 @@
         [...simState.people.values()].forEach((personData) => {
             let { id, element, state, kaishi, kanryo, servicePointIndex, waitingTime, queueStartTime } = personData;
             
-            // 1. 待ち時間0の客が kaishi に達したらサービスインさせる
-            if (state === 'arrived' && waitingTime === 0 && simState.time >= kaishi) {
-                startServingZeroWaitTimePerson(personData);
-                personData.state = 'serving'; // 状態を更新
-            }
+            if (!element) return; // DOM要素がなければスキップ
             
-            // 2. 待ち客の状態更新
-            if (state === 'waiting' && element) {
+            // 1. 待ち客の状態更新 ('arrived' -> 'waiting' または 'serving')
+            if (state === 'arrived' || state === 'waiting') {
                 const waitTimeEl = element.querySelector('.wait-time');
                 
-                // リアルタイム待ち時間表示
-                if (waitTimeEl) {
-                    // 待ち行列に入ってからの経過時間
-                    const waitingDuration = simState.time - queueStartTime; 
-                    const displayWaitTime = Math.max(0, waitingDuration); 
+                // ★修正点: リアルタイム経過待ち時間の計算 (現在時刻 - 待ち開始時刻)
+                const elapsedTime = Math.max(0, simState.time - queueStartTime);
+                
+                // 待ち時間が0.01秒を超えたら視覚的に表示を開始する
+                if (elapsedTime > ZERO_THRESHOLD) {
+                    element.style.opacity = 1;
+                    element.classList.add('waiting');
+                    personData.state = 'waiting'; // 状態を 'waiting' に更新
                     
-                    waitTimeEl.textContent = `${displayWaitTime.toFixed(1)}秒`; 
+                    // 客が表示されたことで列が詰まる可能性があるため、位置を更新
+                    updateWaitingQueuePosition(); 
+                }
+                
+                if (waitTimeEl && element.style.opacity == 1) {
+                    // ★修正点: リアルタイムの経過時間を表示
+                    waitTimeEl.textContent = `${elapsedTime.toFixed(1)}秒経過`; 
                     
-                    if (displayWaitTime > simState.serviceTime * 2) {
-                         waitTimeEl.classList.add('text-red-500');
+                    // 色付けロジック (長い待ち時間には警告色)
+                    waitTimeEl.classList.remove('text-gray-700', 'text-red-500', 'text-green-600'); 
+                    
+                    if (waitingTime > simState.serviceTime * 2) {
+                         waitTimeEl.classList.add('text-red-500'); // 長い待ち時間
+                    } else if (waitingTime > ZERO_THRESHOLD) {
+                         waitTimeEl.classList.add('text-green-600'); // 標準の待ち時間
                     } else {
-                         waitTimeEl.classList.remove('text-red-500');
+                         waitTimeEl.classList.add('text-gray-700'); // 待ち時間なし
                     }
                 }
 
-                // 待ち行列からのサービスインの処理
+                // 待ち行列からのサービスインの処理 (kaishi時刻に達したらサービスイン)
                 if (simState.waitingQueue[0] === id && simState.time >= kaishi) {
                     
                     personData.state = 'serving';
-                    element.classList.remove('waiting');
                     
-                    // サービスポイントへ移動 (キューから完全に離脱するアニメーション)
-                    // 要素を画面外に消しつつ、サービスポイント内に表示されるまでの間の違和感をなくす
-                    element.remove(); // DOM要素を削除する
+                    element.remove(); // キューから要素を削除
                     
-                    // キューから削除
                     simState.waitingQueue.shift();
-                    // 残りの待ち客の位置を更新 (詰める)
                     updateWaitingQueuePosition();
                     
                     // サービスポイント内に客を表示
@@ -827,29 +813,29 @@
                     if (spContainerEl) {
                         spContainerEl.classList.remove('hidden');
                         
-                        // 客番号
                         const spPersonNumEl = spContainerEl.querySelector('.sp-person-number');
                         if (spPersonNumEl) {
                             spPersonNumEl.textContent = id + 1; 
                         }
                         
-                        // 待ち時間表示
                         const spWaitTimeEl = spContainerEl.querySelector('.sp-wait-time');
                         if (spWaitTimeEl) {
-                            const waitText = waitingTime <= 0 ? '待ちなし' : `${waitingTime.toFixed(1)}秒待ち`;
-                            spWaitTimeEl.textContent = waitText;
+                            // ★修正点: 乗り場の下には「待ち時間」を表示
+                            const waitDisplay = waitingTime <= ZERO_THRESHOLD ? '待ちなし' : `${waitingTime.toFixed(1)}秒待ち`;
+                            spWaitTimeEl.textContent = waitDisplay;
+
+                            spWaitTimeEl.classList.remove('text-white', 'text-yellow-400');
                             if (waitingTime > simState.serviceTime * 2) {
-                                spWaitTimeEl.classList.add('text-yellow-400');
+                                spWaitTimeEl.classList.add('text-yellow-400'); // 長い待ち時間警告
                             } else {
-                                spWaitTimeEl.classList.remove('text-yellow-400');
+                                spWaitTimeEl.classList.add('text-white');
                             }
-                            spWaitTimeEl.classList.add('text-white');
                         }
                     }
                 }
             }
             
-            // 3. サービス中 (serving) -> 完了
+            // 2. サービス中 (serving) -> 完了
             if (state === 'serving') {
                 const spEl = document.getElementById(`service-point-${servicePointIndex}`);
                 const progressBar = spEl ? spEl.querySelector('.progress-bar') : null;
@@ -857,31 +843,30 @@
 
                 // プログレスバー（乗車時間ゲージ）の更新
                 if (progressBar) {
-                    const duration = kanryo - kaishi; // サービス時間
-                    const elapsed = simState.time - kaishi; // 経過時間
-                    const progress = Math.min(100, (elapsed / duration) * 100);
+                    const duration = kanryo - kaishi; 
+                    const elapsed = simState.time - kaishi; 
+                    const progress = Math.min(100, (Math.max(0, elapsed) / duration) * 100);
                     progressBar.style.width = `${progress}%`;
                 }
+                
+                // ★乗車中の表示は更新不要 (サービスイン時にセットした待ち時間を維持)
+                // ただし、乗車中に完了客がさらに出た場合、次の客をサービスインさせるまでこの客が表示される
+                
 
                 if (simState.time >= kanryo) {
                     personData.state = 'completed';
                     
-                    // サービスポイントから客を非表示
                     if (spContainerEl) {
                          spContainerEl.classList.add('hidden');
                     }
-                    if (progressBar) progressBar.style.width = '0%'; // プログレスバーリセット
+                    if (progressBar) progressBar.style.width = '0%'; 
                     
-                    // 完了客数の更新
                     completedCountDisplay.textContent = parseInt(completedCountDisplay.textContent) + 1;
                     
-                    // 待ち時間一覧を更新
-                    updateWaitingList(id, waitingTime);
+                    updateWaitingList(id, waitingTime); 
                     
-                    // データから削除
                     simState.people.delete(id);
                     
-                    // 全ての客が完了したらシミュレーションを終了
                     if (parseInt(completedCountDisplay.textContent) === SIM_COUNT) {
                         endSimulation();
                     }
@@ -897,11 +882,12 @@
      * 状態表示を更新する
      */
     function updateStatusDisplay() {
-        const avgWait = simState.waitingTimes.length > 0 
-            ? simState.totalWaitingTime / simState.waitingTimes.length 
+        // 完了客数に基づいた平均待ち時間を計算
+        const completedCount = parseInt(completedCountDisplay.textContent);
+        const avgWait = completedCount > 0 
+            ? simState.waitingTimes.slice(0, completedCount).reduce((a, b) => a + b, 0) / completedCount
             : 0;
 
-        // 表示される到着客数は、システムに登録された客の総数
         const displayedArrivedCount = Math.min(SIM_COUNT, simState.currentPersonId);
 
         currentTimeDisplay.textContent = simState.time.toFixed(2);
@@ -916,10 +902,8 @@
             if (spEl) {
                 const isBusy = simState.time < kanryoTime;
                 
-                // 乗り場全体の色の調整
                 spEl.style.backgroundColor = isBusy ? '#EF4444' : '#10B981'; // 忙しい:赤, 空き:緑
 
-                // 状態テキストの更新
                 if (spStatusEl) {
                     spStatusEl.textContent = isBusy 
                         ? `乗車中`
@@ -937,15 +921,14 @@
         clearInterval(simState.timer);
         startButton.disabled = true;
         
-        const avgWait = simState.waitingTimes.length > 0 
-            ? simState.totalWaitingTime / simState.waitingTimes.length 
+        const completedCount = parseInt(completedCountDisplay.textContent);
+        const avgWait = completedCount > 0 
+            ? simState.waitingTimes.slice(0, completedCount).reduce((a, b) => a + b, 0) / completedCount
             : 0;
 
-        // 結果をモーダルで表示
         finalAvgWaitTime.textContent = avgWait.toFixed(2);
         messageBox.classList.remove('hidden');
 
-        // 乗り場の色と状態をリセット
         simState.servicePointKanryoTimes.forEach((_, index) => {
             const spEl = document.getElementById(`service-point-${index}`);
             const spStatusEl = document.getElementById(`sp-status-${index}`);
@@ -972,6 +955,7 @@
             servicePointsSelect.value = simState.numServicePoints;
             return;
         }
+        simState.numServicePoints = parseInt(servicePointsSelect.value);
         resetSimulation();
     });
 
@@ -985,28 +969,19 @@
     // シミュレーション開始/一時停止/再開 ボタン
     startButton.addEventListener('click', () => {
         if (!simState.isRunning) {
-            // 初期開始処理
             
-            // 設定値の取得と反映
+            simState.numServicePoints = parseInt(servicePointsSelect.value);
             simState.maxArrivalInterval = parseInt(maxArrivalIntervalInput.value);
             simState.serviceTime = parseInt(serviceTimeInput.value);
             
-            // 乗り場数が変わった場合はリセット処理でUIを更新
             resetSimulation(); 
 
-            // 初期化と開始
             simState.isRunning = true;
             simState.isPaused = false;
             
-            // 最初の客を $t=0$ でシステムに登録する
             simState.touchaku = 0; 
             processNextPerson();
 
-            // 乗り場完了時刻の初期化
-            simState.servicePointKanryoTimes = Array(simState.numServicePoints).fill(0);
-            updateServicePointsUI();
-
-            // アニメーションループ開始
             startButton.textContent = '一時停止';
             startButton.classList.remove('bg-emerald-500', 'hover:bg-emerald-600');
             startButton.classList.add('bg-yellow-500', 'hover:bg-yellow-600');
@@ -1015,7 +990,6 @@
             simState.timer = setInterval(animationLoop, simState.animationInterval);
             
         } else {
-            // 一時停止/再開
             togglePause();
         }
     });
@@ -1025,16 +999,13 @@
     
     // 初期ロード時の処理
     window.onload = () => {
-        // スライダーの初期値を反映
         const initialSpeed = parseInt(simulationSpeedInput.value);
         simState.simSpeed = initialSpeed;
         speedValueDisplay.textContent = initialSpeed.toFixed(0);
 
-        // UIの初期設定
         resetSimulation(); 
     };
 </script>
 
 </body>
 </html>
-
